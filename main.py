@@ -11,11 +11,14 @@ from fastapi.responses import HTMLResponse
 import os
 from dotenv import load_dotenv
 import aiosmtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # 1. CONFIGURATION
 load_dotenv()
-resend.api_key = os.getenv("RESEND_API_KEY")
 MONGODB_URL = os.getenv("MONGODB_URL")
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
 BACKEND_URL = os.getenv("BACKEND_URL") 
 
 app = FastAPI()
@@ -141,22 +144,21 @@ async def forgot_password(request: ForgotPasswordRequest):
         """
         msg.attach(MIMEText(html_content, "html"))
 
-        # --- ENVOI VIA GMAIL PORT 465 (SSL) ---
+        # ENVOI VIA GMAIL PORT 465 (SSL)
         await aiosmtplib.send(
             msg,
             hostname="smtp.gmail.com",
             port=465,
-            use_tls=True, # Utilise SSL directement
+            use_tls=True,
             username=EMAIL_USER,
             password=EMAIL_PASS,
         )
 
-        print(f"✅ Email envoyé avec succès à {email}")
         return {"message": "Email sent"}
 
     except Exception as error:
-        print(f"❌ Erreur Gmail SMTP: {str(error)}")
-        raise HTTPException(status_code=500, detail="Le serveur de mail ne répond pas.")
+        print(f"❌ Erreur SMTP: {str(error)}")
+        raise HTTPException(status_code=500, detail="Mail delivery failed")
 
 @app.post("/reset-password/{token}")
 async def reset_password(token: str, request: ResetPassword):
