@@ -6,7 +6,6 @@ import bcrypt
 from datetime import datetime
 import secrets
 import time
-import asyncio
 import smtplib
 import ssl
 from email.mime.text import MIMEText
@@ -18,8 +17,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Variables récupérées sur Vercel
-MONGODB_URI = os.getenv("MONGODB_URI")
+# --- CONFIGURATION (Vérifie bien ces noms sur Vercel !) ---
+MONGODB_URI = os.getenv("MONGODB_URI") 
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 BACKEND_URL = os.getenv("BACKEND_URL") 
@@ -40,6 +39,7 @@ db = client.ali
 users_collection = db.footballchallenges
 password_reset_collection = db.passwordresets
 
+# Models
 class newUser(BaseModel):
     username: str
     email: EmailStr
@@ -67,7 +67,7 @@ def verify_password(plain_password: str, hashed_password: str):
 
 @app.get("/")
 async def root():
-    return {"message": "API is Live on Vercel"}
+    return {"message": "API is Live"}
 
 @app.post("/register")
 async def register(user: newUser):
@@ -94,38 +94,60 @@ async def login(user: User):
 @app.get("/open-app/{token}", response_class=HTMLResponse)
 async def open_app_redirect(token: str):
     app_link = f"footballchallenges://reset-password/{token}"
-    return f"<html><script>window.location.href = '{app_link}';</script></html>"
-
-def send_gmail_sync(to_email, username, redirect_link):
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Reset Password"
-    msg["From"] = f"Football Challenges <{EMAIL_USER}>"
-    msg["To"] = to_email
-    html = f"<div style='text-align:center;'><h2>Reset Password</h2><p>Hello {username}, click below:</p><a href='{redirect_link}' style='background:#007bff;color:white;padding:12px;text-decoration:none;'>RESET PASSWORD</a></div>"
-    msg.attach(MIMEText(html, "html"))
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.sendmail(EMAIL_USER, to_email, msg.as_string())
+    return f"<html><body style='text-align:center;padding-top:50px;'><h2>Redirecting...</h2><script>window.location.href = '{app_link}';</script></body></html>"
 
 @app.post("/forgot-password")
 async def forgot_password(request: ForgotPasswordRequest):
-    email = request.email.lower().strip()
-    user = await users_collection.find_one({"email": email})
-    if not user: return {"message": "Email sent if account exists"}
-    token = secrets.token_hex(20)
-    await password_reset_collection.insert_one({"email": email, "token": token, "expires": int(time.time()*1000)+3600000})
-    redirect_link = f"{BACKEND_URL}/open-app/{token}"
-    await asyncio.to_thread(send_gmail_sync, email, user['username'], redirect_link)
-    return {"message": "Email sent"}
+    try:
+        email = request.email.lower().strip()
+        user = await users_collection.find_one({"email": email})
+        
+        if not user:
+            return {"message": "Email sent if account exists"}
+
+        token = secrets.token_hex(20)
+        expires = int(time.time() * 1000) + 3600000 
+        await password_reset_collection.insert_one({"email": email, "token": token, "expires": expires})
+
+        # Sécurité : Si BACKEND_URL est vide, on évite le crash
+        base_url = BACKEND_URL if BACKEND_URL else "https://votre-app.vercel.app"
+        redirect_link = f"{base_url}/open-app/{token}"
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "Reset Password - Football Challenges"
+        msg["From"] = f"Football Challenges <{EMAIL_USER}>"
+        msg["To"] = email
+        
+        html = f"<html><body style='text-align:center;'><h2>Password Reset</h2><p>Click below:</p><a href='{redirect_link}' style='background:#007bff;color:white;padding:12px;text-decoration:none;border-radius:5px;'>RESET PASSWORD</a></body></html>"
+        msg.attach(MIMEText(html, "html"))
+
+        # ENVOI DIRECT (Plus fiable sur Vercel)
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, email, msg.as_string())
+
+        return {"message": "Email sent"}
+
+    except Exception as error:
+        # On renvoie l'erreur réelle dans le log Vercel pour pouvoir la lire
+        print(f"CRASH LOG: {str(error)}")
+        raise HTTPException(status_code=500, detail=str(error))
 
 @app.post("/reset-password/{token}")
 async def reset_password(token: str, request: ResetPassword):
-    reset_request = await password_reset_collection.find_one({"token": token, "expires": {"$gt": int(time.time()*1000)}})
-    if not reset_request: raise HTTPException(status_code=400, detail="Invalid token")
-    await users_collection.update_one({"email": reset_request["email"]}, {"$set": {"password": get_password_hash(request.new_password)}})
+    current_time = int(time.time() * 1000)
+    reset_request = await password_reset_collection.find_one({"token": token, "expires": {"$gt": current_time}})
+    if not reset_request:
+        raise HTTPException(status_code=400, detail="Invalid token")
+    
+    await users_collection.update_one(
+        {"email": reset_request["email"]},
+        {"$set": {"password": get_password_hash(request.new_password)}}
+    )
     await password_reset_collection.delete_one({"token": token})
     return {"message": "Success"}
 
@@ -135,6 +157,7 @@ async def update_score(scoreload: Scoreload, authorization: Optional[str] = Head
     token = authorization.split(" ")[1]
     user = await users_collection.find_one({"token": token})
     if not user: raise HTTPException(status_code=401)
+
     field = f"{scoreload.type}Score"
     await users_collection.update_one({"_id": user["_id"]}, {"$set": {field: scoreload.score}})
     return {"message": "Updated"}
