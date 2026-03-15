@@ -164,6 +164,21 @@ async def update_score(scoreload: Scoreload, authorization: Optional[str] = Head
 
 @app.get("/leaderboard/{challenge_type}")
 async def get_leaderboard(challenge_type: str):
+    thresholds = {
+        "goals": 100000,
+        "assists": 10000,
+        "trophies": 1000
+    }
+    
+    threshold = thresholds.get(challenge_type, 0)
     field = f"{challenge_type}Score"
-    top_users = await users_collection.find().sort(field, -1).to_list(3)
-    return [{"username": u["username"], "score": u.get(field, 0)} for u in top_users]
+
+    top_users = await users_collection.find({field: {"$gte": threshold}}).sort(field, -1).to_list(3)
+    
+    return [
+        {
+            "username": user["username"],
+            "score": user.get(field, 0)
+        }
+        for user in top_users
+    ]
