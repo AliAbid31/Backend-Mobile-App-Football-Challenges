@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi.responses import HTMLResponse
 import os
 from dotenv import load_dotenv
-import aiosmtplib
+import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -144,21 +144,25 @@ async def forgot_password(request: ForgotPasswordRequest):
         """
         msg.attach(MIMEText(html_content, "html"))
 
-        # ENVOI VIA GMAIL PORT 465 (SSL)
-        await aiosmtplib.send(
-            msg,
-            hostname="smtp.gmail.com",
-            port=465,
-            use_tls=True,
-            username=EMAIL_USER,
-            password=EMAIL_PASS,
-        )
+        def send_email_sync():
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
 
+            # Connexion via SMTP SSL (Port 465)
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=15) as server:
+                server.login(EMAIL_USER, EMAIL_PASS)
+                server.sendmail(EMAIL_USER, email, msg.as_string())
+
+        # On lance l'envoi dans un thread séparé pour ne pas bloquer FastAPI
+        await asyncio.to_thread(send_email_sync)
+        
+        print(f"✅ Email envoyé avec succès à {email}")
         return {"message": "Email sent"}
 
     except Exception as error:
-        print(f"❌ Erreur SMTP: {str(error)}")
-        raise HTTPException(status_code=500, detail="Mail delivery failed")
+        print(f"❌ Erreur SMTP : {str(error)}")
+        raise HTTPException(status_code=500, detail=f"Mail error: {str(error)}")
 
 @app.post("/reset-password/{token}")
 async def reset_password(token: str, request: ResetPassword):

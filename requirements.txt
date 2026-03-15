@@ -4,4 +4,3 @@ motor
 pydantic[email]
 bcrypt
 python-dotenv
-aiosmtplib
