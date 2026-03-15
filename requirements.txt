@@ -1,7 +1,6 @@
 fastapi
-uvicorn
 motor
 pydantic[email]
 bcrypt
 python-dotenv
-python-multipart
+aiosmtplib
