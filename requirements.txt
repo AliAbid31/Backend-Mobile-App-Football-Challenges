@@ -4,3 +4,4 @@ motor
 pydantic[email]
 bcrypt
 python-dotenv
+python-multipart

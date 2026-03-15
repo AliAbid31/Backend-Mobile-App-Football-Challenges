@@ -6,13 +6,15 @@ import bcrypt
 from datetime import datetime
 import secrets
 import time
+import asyncio  # <--- CRUCIAL : Importé ici
+import smtplib  # <--- CRUCIAL : Importé ici
+import ssl      # <--- CRUCIAL : Importé ici
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Optional
 from fastapi.responses import HTMLResponse
 import os
 from dotenv import load_dotenv
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 # 1. CONFIGURATION
 load_dotenv()
@@ -67,36 +69,30 @@ def verify_password(plain_password: str, hashed_password: str):
 # 5. ROUTES
 @app.get("/")
 async def root():
-    return {"message": "Football Challenges API is Live!"}
+    return {"message": "API is Live"}
 
 @app.post("/register")
 async def register(user: newUser):
     if await users_collection.find_one({"username": user.username}):
         raise HTTPException(status_code=400, detail="Username already exists")
-    if await users_collection.find_one({"email": user.email.lower()}):
-        raise HTTPException(status_code=400, detail="Email already exists")
-    
     new_user = {
         "username": user.username,
         "email": user.email.lower(),
         "password": get_password_hash(user.password),
-        "goalsScore": 0,
-        "assistsScore": 0,
-        "trophiesScore": 0,
-        "created_at": datetime.utcnow(),
+        "goalsScore": 0, "assistsScore": 0, "trophiesScore": 0,
+        "created_at": datetime.utcnow()
     }
     await users_collection.insert_one(new_user)
-    return {"message": "User registered successfully"}
+    return {"message": "Registered"}
 
 @app.post("/login")
 async def login(user: User):
     db_user = await users_collection.find_one({"username": user.username})
     if not db_user or not verify_password(user.password, db_user["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
     token = secrets.token_hex(32)
     await users_collection.update_one({"_id": db_user["_id"]}, {"$set": {"token": token}})
-    return {"message": "Login successful", "token": token, "username": db_user["username"]}
+    return {"token": token, "username": db_user["username"]}
 
 @app.get("/open-app/{token}", response_class=HTMLResponse)
 async def open_app_redirect(token: str):
@@ -110,6 +106,35 @@ async def open_app_redirect(token: str):
         </body>
     </html>
     """
+
+# --- FONCTION D'ENVOI SYNCHRONE (DANS UN THREAD) ---
+def send_gmail_sync(to_email, username, redirect_link):
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Password Reset - Football Challenges"
+    msg["From"] = f"Football Challenges <{EMAIL_USER}>"
+    msg["To"] = to_email
+
+    html_content = f"""
+    <html>
+      <body style="text-align: center; font-family: Arial; padding: 20px;">
+        <h2>Reset Password</h2>
+        <p>Hello {username}, click the button below to reset your password:</p>
+        <a href="{redirect_link}" style="display:inline-block; padding:15px 25px; background-color:#007bff; color:white; text-decoration:none; border-radius:8px; font-weight:bold;">
+            RESET PASSWORD
+        </a>
+      </body>
+    </html>
+    """
+    msg.attach(MIMEText(html_content, "html"))
+
+    # Config SSL identique à ton code Node.js (rejectUnauthorized: false)
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=15) as server:
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.sendmail(EMAIL_USER, to_email, msg.as_string())
 
 @app.post("/forgot-password")
 async def forgot_password(request: ForgotPasswordRequest):
@@ -126,43 +151,14 @@ async def forgot_password(request: ForgotPasswordRequest):
 
         redirect_link = f"{BACKEND_URL}/open-app/{token}"
 
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = "Password Reset - Football Challenges"
-        msg["From"] = f"Football Challenges <{EMAIL_USER}>"
-        msg["To"] = email
-
-        html_content = f"""
-        <html>
-          <body style="text-align: center; font-family: Arial; padding: 20px;">
-            <h2>Reset Password</h2>
-            <p>Hello {user['username']}, click the button below to reset your password:</p>
-            <a href="{redirect_link}" style="display:inline-block; padding:15px 25px; background-color:#007bff; color:white; text-decoration:none; border-radius:8px; font-weight:bold;">
-                RESET PASSWORD
-            </a>
-          </body>
-        </html>
-        """
-        msg.attach(MIMEText(html_content, "html"))
-
-        def send_email_sync():
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-
-            # Connexion via SMTP SSL (Port 465)
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=15) as server:
-                server.login(EMAIL_USER, EMAIL_PASS)
-                server.sendmail(EMAIL_USER, email, msg.as_string())
-
-        # On lance l'envoi dans un thread séparé pour ne pas bloquer FastAPI
-        await asyncio.to_thread(send_email_sync)
+        # On lance l'envoi dans un thread asyncio pour ne pas bloquer le serveur
+        await asyncio.to_thread(send_gmail_sync, email, user['username'], redirect_link)
         
-        print(f"✅ Email envoyé avec succès à {email}")
         return {"message": "Email sent"}
 
     except Exception as error:
-        print(f"❌ Erreur SMTP : {str(error)}")
-        raise HTTPException(status_code=500, detail=f"Mail error: {str(error)}")
+        print(f"❌ Gmail Error: {error}")
+        raise HTTPException(status_code=500, detail="Mail server error")
 
 @app.post("/reset-password/{token}")
 async def reset_password(token: str, request: ResetPassword):
@@ -176,25 +172,4 @@ async def reset_password(token: str, request: ResetPassword):
         {"$set": {"password": get_password_hash(request.new_password)}}
     )
     await password_reset_collection.delete_one({"token": token})
-    return {"message": "Password updated successfully"}
-
-@app.put("/challenges/score")
-async def update_score(scoreload: Scoreload, authorization: Optional[str] = Header(None)):
-    if not authorization: raise HTTPException(status_code=401)
-    token = authorization.split(" ")[1]
-    user = await users_collection.find_one({"token": token})
-    if not user: raise HTTPException(status_code=401)
-
-    field = f"{scoreload.type}Score"
-    thresholds = {"goals": 100000, "assists": 10000, "trophies": 1000}
-    
-    if scoreload.score >= thresholds.get(scoreload.type, 0) and scoreload.score > user.get(field, 0):
-        await users_collection.update_one({"_id": user["_id"]}, {"$set": {field: scoreload.score}})
-        return {"message": "Score updated"}
-    return {"message": "Score too low or invalid"}
-
-@app.get("/leaderboard/{challenge_type}")
-async def get_leaderboard(challenge_type: str):
-    field = f"{challenge_type}Score"
-    top_users = await users_collection.find().sort(field, -1).to_list(3)
-    return [{"username": u["username"], "score": u.get(field, 0)} for u in top_users]
+    return {"message": "Success"}
