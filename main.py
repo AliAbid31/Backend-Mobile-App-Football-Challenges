@@ -153,14 +153,48 @@ async def reset_password(token: str, request: ResetPassword):
 
 @app.put("/challenges/score")
 async def update_score(scoreload: Scoreload, authorization: Optional[str] = Header(None)):
-    if not authorization: raise HTTPException(status_code=401)
-    token = authorization.split(" ")[1]
-    user = await users_collection.find_one({"token": token})
-    if not user: raise HTTPException(status_code=401)
+    if not authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header missing")
+    
+    try:
+        token = authorization.split(" ")[1]
+    except IndexError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token format")
 
-    field = f"{scoreload.type}Score"
-    await users_collection.update_one({"_id": user["_id"]}, {"$set": {field: scoreload.score}})
-    return {"message": "Updated"}
+    user = await users_collection.find_one({"token": token})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    thresholds = {
+        "goals": 100000,
+        "assists": 10000,
+        "trophies": 1000
+    }
+
+    challenge_type = scoreload.type
+    new_score = scoreload.score
+    
+    if challenge_type not in thresholds:
+        raise HTTPException(status_code=400, detail="Invalid challenge type")
+
+    threshold = thresholds[challenge_type]
+    field_name = f"{challenge_type}Score"
+    current_score = user.get(field_name, 0)
+
+    if new_score >= threshold and new_score > current_score:
+        await users_collection.update_one(
+            {"_id": user["_id"]},
+            {"$set": {
+                field_name: new_score,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        return {"message": f"New highscore for {challenge_type} updated successfully!"}
+    
+    if new_score < threshold:
+        return {"message": f"Score {new_score} is below the required threshold of {threshold}"}
+    else:
+        return {"message": f"Score {new_score} is not higher than your current record of {current_score}"}
 
 @app.get("/leaderboard/{challenge_type}")
 async def get_leaderboard(challenge_type: str):
