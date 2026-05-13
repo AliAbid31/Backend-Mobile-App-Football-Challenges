@@ -118,7 +118,13 @@ async def forgot_password(request: ForgotPasswordRequest):
         msg["From"] = f"Football Challenges <{EMAIL_USER}>"
         msg["To"] = email
         
-        html = f"<html><body style='text-align:center;'><h2>Password Reset</h2><p>Click below:</p><a href='{redirect_link}' style='background:#007bff;color:white;padding:12px;text-decoration:none;border-radius:5px;'>RESET PASSWORD</a></body></html>"
+        html = f"<html><body style='text-align:center;'>        
+        <p>Hello ${user.username},</p>
+        <p>You asked to reset your password.</p>
+        <p>Please click on the button below sent to choice a new password. This will expire in one hour.
+        <a href='{redirect_link}' style='background:#007bff;color:white;padding:12px;text-decoration:none;border-radius:5px;'>RESET PASSWORD</a>
+        <p>If you did not initiate this request, please ignore this email.</p>
+        </body></html>"
         msg.attach(MIMEText(html, "html"))
 
         # ENVOI DIRECT (Plus fiable sur Vercel)
